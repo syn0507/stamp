@@ -1,0 +1,172 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+#map{width:100%;height:320px;border-radius:var(--border-radius-lg);border:0.5px solid var(--color-border-tertiary);overflow:hidden;}
+.panel{padding:12px 0;}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px;}
+.stat{background:var(--color-background-secondary);border-radius:var(--border-radius-md);padding:10px 12px;}
+.stat-label{font-size:12px;color:var(--color-text-secondary);margin-bottom:2px;}
+.stat-val{font-size:20px;font-weight:500;color:var(--color-text-primary);}
+.stamp-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:12px;}
+.stamp-card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:10px 12px;display:flex;align-items:center;gap:10px;}
+.stamp-card.got{border-color:#3B6D11;background:#EAF3DE;}
+.stamp-icon{width:36px;height:36px;border-radius:50%;background:var(--color-background-secondary);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;}
+.stamp-card.got .stamp-icon{background:#C0DD97;}
+.stamp-name{font-size:13px;font-weight:500;color:var(--color-text-primary);line-height:1.3;}
+.stamp-dist{font-size:11px;color:var(--color-text-secondary);margin-top:2px;}
+.stamp-card.got .stamp-dist{color:#3B6D11;}
+.msg{font-size:13px;color:var(--color-text-secondary);text-align:center;padding:8px 0 4px;}
+.btn-row{display:flex;gap:8px;margin-top:4px;}
+button{flex:1;padding:9px;font-size:13px;font-weight:500;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);background:transparent;color:var(--color-text-primary);cursor:pointer;}
+button:hover{background:var(--color-background-secondary);}
+button.primary{background:#639922;border-color:#3B6D11;color:#fff;}
+button.primary:hover{background:#3B6D11;}
+.toast{position:absolute;left:50%;transform:translateX(-50%);top:10px;background:#27500A;color:#EAF3DE;font-size:13px;font-weight:500;padding:8px 18px;border-radius:99px;display:none;z-index:9999;white-space:nowrap;}
+.toast.show{display:block;}
+.complete-banner{background:#EAF3DE;border:0.5px solid #3B6D11;border-radius:var(--border-radius-lg);padding:14px;text-align:center;margin-bottom:12px;}
+.complete-banner p{font-size:13px;color:#27500A;margin-top:4px;}
+</style>
+
+<div style="position:relative;">
+<div class="toast" id="toast"></div>
+<div id="map"></div>
+<div class="panel">
+  <div class="stats">
+    <div class="stat"><div class="stat-label">スタンプ獲得</div><div class="stat-val" id="got-count">0 / 5</div></div>
+    <div class="stat"><div class="stat-label">現在地精度</div><div class="stat-val" id="accuracy">--</div></div>
+  </div>
+  <div class="stamp-row" id="stamp-list"></div>
+  <div id="complete-area"></div>
+  <div class="msg" id="status-msg">「位置情報を取得」ボタンを押してスタートしよう</div>
+  <div class="btn-row">
+    <button class="primary" id="locate-btn" onclick="startLocate()">位置情報を取得</button>
+    <button onclick="resetGame()">リセット</button>
+  </div>
+</div>
+</div>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const STAMP_RADIUS = 80;
+
+const STAMPS_TEMPLATE = [
+  {id:0, name:"北の広場", icon:"S", offsetLat:0.0008, offsetLng:0.0000, got:false},
+  {id:1, name:"東の公園", icon:"S", offsetLat:0.0000, offsetLng:0.0010, got:false},
+  {id:2, name:"南のベンチ", icon:"S", offsetLat:-0.0008, offsetLng:0.0003, got:false},
+  {id:3, name:"西の角", icon:"S", offsetLat:0.0003, offsetLng:-0.0010, got:false},
+  {id:4, name:"中心の泉", icon:"S", offsetLat:0.0000, offsetLng:0.0000, got:false},
+];
+
+let stamps = JSON.parse(JSON.stringify(STAMPS_TEMPLATE));
+let map, userMarker, userCircle, stampMarkers=[], watching=false, watchId=null, baseLat=null, baseLng=null;
+
+function initMap(lat, lng){
+  if(map) return;
+  map = L.map('map',{zoomControl:true,attributionControl:false}).setView([lat,lng],17);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+  stamps.forEach(s=>{
+    const slat = lat + s.offsetLat;
+    const slng = lng + s.offsetLng;
+    s.lat = slat; s.lng = slng;
+    const marker = L.circleMarker([slat,slng],{
+      radius:10, color:'#639922', fillColor:'#C0DD97', fillOpacity:1, weight:2
+    }).addTo(map).bindPopup(s.name);
+    stampMarkers.push(marker);
+  });
+}
+
+function updateUserPos(lat, lng, acc){
+  if(!map) initMap(lat, lng);
+  document.getElementById('accuracy').textContent = Math.round(acc)+'m';
+  if(!userMarker){
+    userMarker = L.circleMarker([lat,lng],{radius:8,color:'#185FA5',fillColor:'#378ADD',fillOpacity:1,weight:2}).addTo(map);
+    userCircle = L.circle([lat,lng],{radius:acc,color:'#378ADD',fillColor:'#378ADD',fillOpacity:0.12,weight:1}).addTo(map);
+  } else {
+    userMarker.setLatLng([lat,lng]);
+    userCircle.setLatLng([lat,lng]).setRadius(acc);
+  }
+  map.panTo([lat,lng]);
+  checkStamps(lat,lng);
+}
+
+function haversine(lat1,lng1,lat2,lng2){
+  const R=6371000, dLat=(lat2-lat1)*Math.PI/180, dLng=(lng2-lng1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+function checkStamps(lat,lng){
+  let changed=false;
+  stamps.forEach((s,i)=>{
+    if(s.got||!s.lat) return;
+    const d=haversine(lat,lng,s.lat,s.lng);
+    if(d<=STAMP_RADIUS){
+      s.got=true; changed=true;
+      stampMarkers[i].setStyle({color:'#27500A',fillColor:'#639922'});
+      showToast(s.name+' のスタンプをゲット！');
+    }
+  });
+  if(changed) renderStamps();
+}
+
+function renderStamps(){
+  const list=document.getElementById('stamp-list');
+  const gotN=stamps.filter(s=>s.got).length;
+  document.getElementById('got-count').textContent=gotN+' / '+stamps.length;
+  list.innerHTML='';
+  stamps.forEach(s=>{
+    const d = (userMarker && s.lat) ? Math.round(haversine(userMarker.getLatLng().lat, userMarker.getLatLng().lng, s.lat, s.lng)) : null;
+    const el=document.createElement('div');
+    el.className='stamp-card'+(s.got?' got':'');
+    el.innerHTML=`<div class="stamp-icon">${s.got?'<svg width="18" height="18" viewBox="0 0 18 18"><path d="M3 9l4 4 8-8" stroke="#3B6D11" stroke-width="2" fill="none" stroke-linecap="round"/></svg>':'<svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="#888780" stroke-width="1.5" fill="none"/></svg>'}</div><div><div class="stamp-name">${s.name}</div><div class="stamp-dist">${s.got?'獲得済み':d!==null?d+'m先':'位置取得後に表示'}</div></div>`;
+    list.appendChild(el);
+  });
+  const completeArea=document.getElementById('complete-area');
+  if(gotN===stamps.length){
+    completeArea.innerHTML='<div class="complete-banner"><div style="font-size:16px;font-weight:500;color:#27500A;">全スタンプ制覇！</div><p>おめでとうございます！すべてのスポットを巡りました。</p></div>';
+    document.getElementById('status-msg').textContent='';
+  } else {
+    completeArea.innerHTML='';
+    document.getElementById('status-msg').textContent='半径'+STAMP_RADIUS+'m以内に近づくとスタンプ獲得！';
+  }
+}
+
+function showToast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+function startLocate(){
+  if(!navigator.geolocation){
+    document.getElementById('status-msg').textContent='位置情報が使えません';
+    return;
+  }
+  document.getElementById('status-msg').textContent='位置情報を取得中...';
+  document.getElementById('locate-btn').textContent='追跡中...';
+  if(watchId) navigator.geolocation.clearWatch(watchId);
+  watchId=navigator.geolocation.watchPosition(
+    pos=>{
+      const {latitude:lat,longitude:lng,accuracy:acc}=pos.coords;
+      if(!baseLat){baseLat=lat;baseLng=lng;}
+      updateUserPos(lat,lng,acc);
+      renderStamps();
+    },
+    err=>{ document.getElementById('status-msg').textContent='位置情報の取得に失敗: '+err.message; },
+    {enableHighAccuracy:true,maximumAge:2000,timeout:10000}
+  );
+}
+
+function resetGame(){
+  stamps=JSON.parse(JSON.stringify(STAMPS_TEMPLATE));
+  if(map){
+    stampMarkers.forEach((m,i)=>{ m.setStyle({color:'#639922',fillColor:'#C0DD97'}); });
+  }
+  renderStamps();
+  document.getElementById('complete-area').innerHTML='';
+  document.getElementById('status-msg').textContent='「位置情報を取得」ボタンを押してスタートしよう';
+}
+
+renderStamps();
+</script>
